@@ -51,6 +51,32 @@ struct Selector : public CompoundNode
   }
 };
 
+struct Invert : public CompoundNode
+{
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    assert(nodes.size() == 1);
+    BehResult res = nodes.front()->update(ecs, entity, bb);
+    if (res == BEH_FAIL)
+      return BEH_SUCCESS;
+    return BEH_FAIL;
+  }
+};
+
+struct Parallel : public CompoundNode
+{
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    for (BehNode *node : nodes)
+    {
+      BehResult res = node->update(ecs, entity, bb);
+      if (res != BEH_RUNNING)
+        return res;
+    }
+    return BEH_RUNNING;
+  }
+};
+
 struct MoveToEntity : public BehNode
 {
   size_t entityBb = size_t(-1); // wraps to 0xff...
@@ -101,26 +127,19 @@ struct IsLowHp : public BehNode
   }
 };
 
-struct FindEnemy : public BehNode
+template <typename T, typename Cond>
+static BehResult findClosestWithComponent(flecs::world &ecs, flecs::entity entity, Blackboard &bb, size_t entityBb, float distance, const Cond &cond)
 {
-  size_t entityBb = size_t(-1);
-  float distance = 0;
-  FindEnemy(flecs::entity entity, float in_dist, const char *bb_name) : distance(in_dist)
-  {
-    entityBb = reg_entity_blackboard_var<flecs::entity>(entity, bb_name);
-  }
-  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
-  {
     BehResult res = BEH_FAIL;
-    static auto enemiesQuery = ecs.query<const Position, const Team>();
-    entity.set([&](const Position &pos, const Team &t)
+    static auto entityQuery = ecs.query<const Position, const T>();
+    entity.set([&](const Position &pos)
     {
       flecs::entity closestEnemy;
       float closestDist = FLT_MAX;
       Position closestPos;
-      enemiesQuery.each([&](flecs::entity enemy, const Position &epos, const Team &et)
+      entityQuery.each([&](flecs::entity enemy, const Position &epos, const T &et)
       {
-        if (t.team == et.team)
+        if (!cond(entity, et))
           return;
         float curDist = dist(epos, pos);
         if (curDist < closestDist)
@@ -136,6 +155,96 @@ struct FindEnemy : public BehNode
         res = BEH_SUCCESS;
       }
     });
+    return res;
+}
+
+struct FindEnemy : public BehNode
+{
+  size_t entityBb = size_t(-1);
+  float distance = 0;
+  FindEnemy(flecs::entity entity, float in_dist, const char *bb_name) : distance(in_dist)
+  {
+    entityBb = reg_entity_blackboard_var<flecs::entity>(entity, bb_name);
+  }
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    return findClosestWithComponent<Team>(ecs, entity, bb, entityBb, distance, [](flecs::entity ent, Team b)
+    { 
+      bool val = true;
+      ent.get([&](const Team &e)
+      {
+        val = e.team != b.team;
+      });
+      return val;
+    });
+  }
+};
+
+struct FindHeal : public BehNode
+{
+  size_t entityBb = size_t(-1);
+  FindHeal(flecs::entity entity, const char *bb_name)
+  {
+    entityBb = reg_entity_blackboard_var<flecs::entity>(entity, bb_name);
+  }
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    return findClosestWithComponent<HealAmount>(ecs, entity, bb, entityBb, 999999, [](flecs::entity e, HealAmount b) { return true; });
+  }
+};
+
+struct FindPowerup : public BehNode
+{
+  size_t entityBb = size_t(-1);
+  FindPowerup(flecs::entity entity, const char *bb_name)
+  {
+    entityBb = reg_entity_blackboard_var<flecs::entity>(entity, bb_name);
+  }
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    return findClosestWithComponent<PowerupAmount>(ecs, entity, bb, entityBb, 999999, [](flecs::entity e, PowerupAmount b) { return true; });
+  }
+};
+
+struct FindWaypoint : public BehNode
+{
+  size_t entityBb = size_t(-1);
+  FindWaypoint(flecs::entity entity, const char *bb_name)
+  {
+    entityBb = reg_entity_blackboard_var<flecs::entity>(entity, bb_name);
+  }
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    auto res = BehResult::BEH_FAIL;
+    entity.get([&](const Waypoint &waypoint)
+    {
+      if (ecs.is_valid(waypoint.next))
+      {
+        bb.set(entityBb, waypoint.next);
+        res = BehResult::BEH_SUCCESS;
+      }
+    });
+    if (res == BEH_SUCCESS)
+    {
+      assert(entityBb != -1);
+      auto waypointEntity = bb.get<flecs::entity>(entityBb);
+      entity.get([&](const Position& pos)
+      {
+        waypointEntity.get([&](const Position &epos, const Waypoint &waypoint)
+        {
+          if (dist(pos, epos) <= 1.0f)
+          {
+            if (ecs.is_valid(waypoint.next))
+            {
+              bb.set(entityBb, waypoint.next);
+              entity.set(waypoint);
+            }
+            else
+              res = BEH_FAIL;
+          }
+        });
+      });
+    }
     return res;
   }
 };
@@ -214,6 +323,22 @@ BehNode *selector(const std::vector<BehNode*> &nodes)
   return sel;
 }
 
+BehNode *invert(BehNode *node)
+{
+  auto inv = new Invert;
+  inv->pushNode(node);
+  return inv;
+}
+
+BehNode *parallel(const std::vector<BehNode*> &nodes)
+{
+  auto par = new Parallel;
+  for (BehNode *node : nodes)
+    par->pushNode(node);
+  return par;
+}
+
+
 BehNode *move_to_entity(flecs::entity entity, const char *bb_name)
 {
   return new MoveToEntity(entity, bb_name);
@@ -227,6 +352,21 @@ BehNode *is_low_hp(float thres)
 BehNode *find_enemy(flecs::entity entity, float dist, const char *bb_name)
 {
   return new FindEnemy(entity, dist, bb_name);
+}
+
+BehNode* find_heal(flecs::entity entity, const char* bb_name)
+{
+  return new FindHeal(entity, bb_name);
+}
+
+BehNode* find_powerup(flecs::entity entity, const char* bb_name)
+{
+  return new FindPowerup(entity, bb_name);
+}
+
+BehNode* find_waypoint(flecs::entity entity, const char* bb_name)
+{
+  return new FindWaypoint(entity, bb_name);
 }
 
 BehNode *flee(flecs::entity entity, const char *bb_name)
