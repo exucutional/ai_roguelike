@@ -30,4 +30,7 @@ BehNode *find_enemy(flecs::entity entity, float dist, const char *bb_name);
 BehNode *flee(flecs::entity entity, const char *bb_name);
 BehNode *patrol(flecs::entity entity, float patrol_dist, const char *bb_name);
 BehNode *patch_up(float thres);
+BehNode *move_to_base();
+BehNode *move_in_random_dir();
 
+void test_selectors(float size, float n);

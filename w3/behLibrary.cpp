@@ -5,6 +5,9 @@
 #include "raylib.h"
 #include "blackboard.h"
 #include <algorithm>
+#include <numeric>
+#include <random>
+#include <iostream>
 
 struct CompoundNode : public BehNode
 {
@@ -52,11 +55,29 @@ struct Selector : public CompoundNode
   }
 };
 
+using UtilityScore = std::vector<std::pair<float, size_t>>;
 struct UtilitySelector : public BehNode
 {
   std::vector<std::pair<BehNode*, utility_function>> utilityNodes;
 
-  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  virtual std::vector<size_t> getSortedIndices(UtilityScore &score)
+  {
+    std::sort(score.begin(), score.end(), [](auto &lhs, auto &rhs)
+    {
+      return lhs.first > rhs.first;
+    });
+    std::vector<size_t> indices(score.size());
+    std::transform(score.begin(), score.end(), indices.begin(), [](const auto &pair)
+    {
+      return pair.second;
+    });
+    return indices;
+  }
+
+
+  template <typename Callback>
+  BehResult updateCb(flecs::world &ecs, flecs::entity entity, Blackboard &bb,
+                     Callback cb)
   {
     std::vector<std::pair<float, size_t>> utilityScores;
     for (size_t i = 0; i < utilityNodes.size(); ++i)
@@ -64,20 +85,119 @@ struct UtilitySelector : public BehNode
       const float utilityScore = utilityNodes[i].second(bb);
       utilityScores.push_back(std::make_pair(utilityScore, i));
     }
-    std::sort(utilityScores.begin(), utilityScores.end(), [](auto &lhs, auto &rhs)
+    const auto utilityIndices = getSortedIndices(utilityScores);
+    for (const auto nodeIdx : utilityIndices)
     {
-      return lhs.first > rhs.first;
-    });
-    for (const std::pair<float, size_t> &node : utilityScores)
-    {
-      size_t nodeIdx = node.second;
       BehResult res = utilityNodes[nodeIdx].first->update(ecs, entity, bb);
       if (res != BEH_FAIL)
+      {
+        cb(nodeIdx);
         return res;
+      }
     }
     return BEH_FAIL;
   }
+
+
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    return updateCb(ecs, entity, bb, [](size_t) {;});
+  }
 };
+
+
+struct WeightedUtilitySelector : public UtilitySelector
+{
+  std::vector<size_t> getSortedIndices(UtilityScore &score) override
+  {
+    auto sum = 0.f;
+    for (const auto &[utility, node] : score)
+    {
+      sum += utility;
+    }
+    UtilityScore weightedPairs(score);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    auto expDist = std::exponential_distribution<float>();
+    std::transform(weightedPairs.begin(), weightedPairs.end(),
+      weightedPairs.begin(), [&](const auto &pair)
+    {
+      return std::pair{expDist(gen) / pair.first * sum, pair.second};
+    });
+    std::sort(weightedPairs.begin(), weightedPairs.end(), [](auto &lhs, auto &rhs)
+    {
+      return lhs.first < rhs.first;
+    });
+    std::vector<size_t> indices(score.size()); 
+    std::transform(weightedPairs.begin(), weightedPairs.end(), indices.begin(), [](const auto &pair)
+    {
+      return pair.second;
+    });
+    return indices;
+  };
+};
+
+struct InertialUtilitySelector : public UtilitySelector
+{
+  std::vector<size_t> getSortedIndices(UtilityScore &score) override
+  {
+    for (auto &[utility, nodeIdx] : score)
+      if (nodeIdx == inertia.second)
+      {
+        utility += inertia.first;
+        utility -= std::max(utility - decreaseRate, 0.0f);
+        break;
+      }
+    return UtilitySelector::getSortedIndices(score);
+  }
+
+  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+  {
+    return updateCb(ecs, entity, bb, [this](size_t nodeIdx)
+    {
+      if (nodeIdx != inertia.second)
+        inertia = { initInertia, nodeIdx };
+    });
+  }
+  const float decreaseRate = 10.0f;
+  const float initInertia = 30.0f;
+  std::pair<float, size_t> inertia = std::pair(0.f, -1);
+};
+
+template <typename T>
+static void test_selector(float size, float n)
+{
+  T selector{};
+  UtilityScore score;
+  score.reserve(size);
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_real_distribution<float> dis(0.f, 100.f);
+  for (int i = 0; i < size; ++i)
+  {
+    const auto val = dis(gen);
+    std::cout << i << " = " << val << "\n";
+    score.push_back({val, i});
+  }
+  for (int i = 0; i < n; ++i)
+  {
+    std::cout << "Test " << i << " : ";
+    const auto indices = selector.getSortedIndices(score);
+    for (const auto idx : indices)
+    {
+      std::cout << idx << " ";
+    }
+    std::cout << "\n";
+  }
+}
+
+void test_selectors(float size, float n)
+{
+  std::cout << "Weighted selector test\n";
+  test_selector<WeightedUtilitySelector>(size, n);
+  std::cout << "Inertial selector test\n";
+  test_selector<InertialUtilitySelector>(size, n);
+}
 
 struct MoveToEntity : public BehNode
 {
@@ -244,7 +364,29 @@ struct PatchUp : public BehNode
   }
 };
 
+struct MoveToBase : public BehNode
+{
+  BehResult update(flecs::world &, flecs::entity entity, Blackboard &bb) override
+  {
+    entity.set([&](const Position &pos, Action &a)
+    {
+      a.action = move_towards(pos, bb.get<Position>("base"));
+    });
+    return BEH_SUCCESS;
+  }
+};
 
+struct MoveInRandomDir : public BehNode
+{
+  BehResult update(flecs::world &, flecs::entity entity, Blackboard &) override
+  {
+    entity.set([&](Action &a)
+    {
+      a.action = GetRandomValue(EA_MOVE_START, EA_MOVE_END - 1);
+    });
+    return BEH_SUCCESS;
+  }
+};
 
 BehNode *sequence(const std::vector<BehNode*> &nodes)
 {
@@ -297,6 +439,16 @@ BehNode *patrol(flecs::entity entity, float patrol_dist, const char *bb_name)
 BehNode *patch_up(float thres)
 {
   return new PatchUp(thres);
+}
+
+BehNode* move_to_base()
+{
+  return new MoveToBase();
+}
+
+BehNode* move_in_random_dir()
+{
+  return new MoveInRandomDir();
 }
 
 
