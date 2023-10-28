@@ -8,6 +8,9 @@
 #include "dungeonUtils.h"
 #include "dijkstraMapGen.h"
 #include "dmapFollower.h"
+#include <chrono>
+
+using namespace std::chrono_literals;
 
 static flecs::entity create_player_approacher(flecs::entity e)
 {
@@ -20,7 +23,7 @@ static flecs::entity create_player_fleer(flecs::entity e)
   e.set(DmapWeights{{{"flee_map", {1.f, 1.f}}}});
   return e;
 }
-
+ 
 static flecs::entity create_hive_follower(flecs::entity e)
 {
   e.set(DmapWeights{{{"hive_map", {1.f, 1.f}}}});
@@ -39,6 +42,15 @@ static flecs::entity create_hive(flecs::entity e)
   return e;
 }
 
+static flecs::entity create_mage(flecs::entity e)
+{
+  static int i = 0;
+  char buf[128]{};
+  sprintf_s(buf, "ally_map_%d", i++);
+  e.set(Mage{buf});
+  e.set(DmapWeights{{{"approach_map_range", {1.5f, 0.9f}}, {buf, {1.5f, 1.8f}}}});
+  return e;
+}
 
 static void create_fuzzy_monster_beh(flecs::entity e)
 {
@@ -145,12 +157,12 @@ static flecs::entity create_monster(flecs::world &ecs, Color col, const char *te
     .set(Blackboard{});
 }
 
-static void create_player(flecs::world &ecs, const char *texture_src)
+static flecs::entity create_player(flecs::world &ecs, const char *texture_src)
 {
   Position pos = find_free_dungeon_tile(ecs);
 
   flecs::entity textureSrc = ecs.entity(texture_src);
-  ecs.entity("player")
+  return ecs.entity("player")
     .set(Position{pos.x, pos.y})
     .set(MovePos{pos.x, pos.y})
     .set(Hitpoints{100.f})
@@ -162,7 +174,8 @@ static void create_player(flecs::world &ecs, const char *texture_src)
     .set(NumActions{2, 0})
     .set(Color{255, 255, 255, 255})
     .add<TextureSource>(textureSrc)
-    .set(MeleeDamage{20.f});
+    .set(MeleeDamage{20.f})
+    .set(Explorer{});
 }
 
 static void create_heal(flecs::world &ecs, int x, int y, float amount)
@@ -185,7 +198,7 @@ static void register_roguelike_systems(flecs::world &ecs)
 {
   static auto dungeonDataQuery = ecs.query<const DungeonData>();
   ecs.system<PlayerInput, Action, const IsPlayer>()
-    .each([&](PlayerInput &inp, Action &a, const IsPlayer)
+    .each([&](flecs::entity e, PlayerInput &inp, Action &a, const IsPlayer)
     {
       bool left = IsKeyDown(KEY_LEFT);
       bool right = IsKeyDown(KEY_RIGHT);
@@ -205,9 +218,35 @@ static void register_roguelike_systems(flecs::world &ecs)
       inp.down = down;
 
       bool pass = IsKeyDown(KEY_SPACE);
+      bool explore = IsKeyPressed(KEY_E);
       if (pass && !inp.passed)
         a.action = EA_PASS;
       inp.passed = pass;
+      inp.explore = explore ? !inp.explore : inp.explore;
+      std::vector<bool> maps = {
+        IsKeyPressed(KEY_ONE), IsKeyPressed(KEY_TWO), IsKeyPressed(KEY_THREE)
+      };
+      if (inp.explore)
+      {
+        a.action = EA_EXPLORE;
+        e.set(DmapWeights{{{"explore_map", {1.f, 1.f}}}});
+      }
+      else
+      {
+        e.remove<DmapWeights>();
+      }
+      const char *mapNameToVisualise[] = {"explore_map", "approach_map_range", "ally_map_0"};
+      static int currentVisualisedMap = 0;
+      for (int map = 0; map < maps.size(); ++map)
+      {
+        if (maps[map] && map != currentVisualisedMap)
+        {
+          ecs.entity(mapNameToVisualise[currentVisualisedMap]).remove<VisualiseMap>();
+          currentVisualisedMap = map;
+          break;
+        }
+      }
+      ecs.entity(mapNameToVisualise[currentVisualisedMap]).add<VisualiseMap>();
     });
   ecs.system<const Position, const Color>()
     .term<TextureSource>(flecs::Wildcard)
@@ -308,6 +347,8 @@ void init_roguelike(flecs::world &ecs)
     .set(Texture2D{LoadTexture("assets/swordsman.png")});
   ecs.entity("minotaur_tex")
     .set(Texture2D{LoadTexture("assets/minotaur.png")});
+  ecs.entity("mage_tex")
+    .set(Texture2D{LoadTexture("assets/mage.png")});
 
   ecs.observer<Texture2D>()
     .event(flecs::OnRemove)
@@ -322,6 +363,10 @@ void init_roguelike(flecs::world &ecs)
   create_hive(create_player_fleer(create_monster(ecs, Color{0, 255, 0, 255}, "minotaur_tex")));
 
   create_player(ecs, "swordsman_tex");
+
+  create_mage(create_monster(ecs, Color{0x11, 0x11, 0x11, 0xff}, "mage_tex"));
+  create_mage(create_monster(ecs, Color{0x11, 0x11, 0x11, 0xff}, "mage_tex"));
+  create_mage(create_monster(ecs, Color{0x11, 0x11, 0x11, 0xff}, "mage_tex"));
 
   ecs.entity("world")
     .set(TurnCounter{})
@@ -363,9 +408,23 @@ static bool is_player_acted(flecs::world &ecs)
 {
   static auto processPlayer = ecs.query<const IsPlayer, const Action>();
   bool playerActed = false;
+  static auto prev = std::chrono::steady_clock::now();
+  static auto autoExploreTime = 0.5s;
   processPlayer.each([&](const IsPlayer, const Action &a)
   {
-    playerActed = a.action != EA_NOP;
+    if (a.action == EA_EXPLORE)
+    {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - prev > autoExploreTime)
+      {
+        prev = now;
+        playerActed = true;
+      }
+    }
+    else
+    {
+      playerActed = a.action != EA_NOP;
+    }
   });
   return playerActed;
 }
@@ -533,8 +592,12 @@ void process_turn(flecs::world &ecs)
   static auto stateMachineAct = ecs.query<StateMachine>();
   static auto behTreeUpdate = ecs.query<BehaviourTree, Blackboard>();
   static auto turnIncrementer = ecs.query<TurnCounter>();
+  static auto processDmapFollowers = ecs.query<const Position, Action, const DmapWeights>();
+  static auto player = ecs.query_builder<const Position, Action, const DmapWeights>().term<IsPlayer>().build();
+
   if (is_player_acted(ecs))
   {
+    process_dmap_followers(ecs, player);
     if (upd_player_actions_count(ecs))
     {
       // Plan action for NPCs
@@ -549,7 +612,7 @@ void process_turn(flecs::world &ecs)
         {
           bt.update(ecs, e, bb);
         });
-        process_dmap_followers(ecs);
+        process_dmap_followers(ecs, processDmapFollowers);
       });
       turnIncrementer.each([](TurnCounter &tc) { tc.count++; });
     }
@@ -559,6 +622,11 @@ void process_turn(flecs::world &ecs)
     dmaps::gen_player_approach_map(ecs, approachMap);
     ecs.entity("approach_map")
       .set(DijkstraMapData{approachMap});
+
+    std::vector<float> approachMapRange;
+    dmaps::gen_player_approach_map(ecs, approachMapRange, 4.0f);
+    ecs.entity("approach_map_range")
+      .set(DijkstraMapData{approachMapRange});
 
     std::vector<float> fleeMap;
     dmaps::gen_player_flee_map(ecs, fleeMap);
@@ -572,8 +640,22 @@ void process_turn(flecs::world &ecs)
 
     //ecs.entity("flee_map").add<VisualiseMap>();
     ecs.entity("hive_follower_sum")
-      .set(DmapWeights{{{"hive_map", {1.f, 1.f}}, {"approach_map", {1.8f, 0.8f}}}})
-      .add<VisualiseMap>();
+      .set(DmapWeights{{{"hive_map", {1.f, 1.f}}, {"approach_map", {1.8f, 0.8f}}}});
+      //.add<VisualiseMap>();
+
+    std::vector<float> exploreMap;
+    dmaps::gen_explore_map(ecs, exploreMap);
+    ecs.entity("explore_map")
+      .set(DijkstraMapData{exploreMap});
+      //.add<VisualiseMap>();
+
+    static auto mages = ecs.query<Mage>();
+    mages.each([&](flecs::entity e, const Mage& mage) {
+      std::vector<float> allyMap;
+      dmaps::gen_ally_map(ecs, allyMap, e);
+      ecs.entity(mage.allyMapName.c_str())
+        .set(DijkstraMapData{allyMap});
+     });
   }
 }
 

@@ -73,6 +73,7 @@ enum Actions
   EA_ATTACK = EA_MOVE_END,
   EA_HEAL_SELF,
   EA_PASS,
+  EA_EXPLORE,
   EA_NUM
 };
 
@@ -109,6 +110,7 @@ struct PlayerInput
   bool up = false;
   bool down = false;
   bool passed = false;
+  bool explore = false;
 };
 
 struct Symbol
@@ -165,3 +167,16 @@ struct DmapWeights
 };
 
 struct Hive {};
+
+struct Mage
+{
+  std::string allyMapName {};
+};
+
+struct Explorer
+{
+  static const int UnexploredTile = 0;
+  static const int ExploredTile = 100;
+  float exploreRange = 5.0f;
+  std::vector<float> exploreMap{};
+};
