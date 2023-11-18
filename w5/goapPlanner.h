@@ -41,7 +41,20 @@ namespace goap
     WorldState worldState;
   };
 
+  inline float heuristic(const goap::WorldState &from,
+                         const goap::WorldState &to)
+  {
+    float cost = 0;
+    for (size_t i = 0; i < to.size(); ++i)
+      if (to[i] >= 0) // we care about it
+        cost += float(abs(to[i] - from[i]));
+    return cost;
+  }
+
+  inline bool operator==(const PlanStep a, const PlanStep b) { return heuristic(a.worldState, b.worldState) == 0; }
+
   float make_plan(const Planner &planner, const WorldState &from, const WorldState &to, std::vector<PlanStep> &plan);
+  bool make_ida_star_plan(const Planner &planner, const WorldState &from, const WorldState &to, std::vector<PlanStep> &plan);
   void print_plan(const Planner &planner, const WorldState &init, const std::vector<PlanStep> &plan);
 };
 

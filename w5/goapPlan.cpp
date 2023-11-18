@@ -1,5 +1,6 @@
 #include "goapPlanner.h"
 #include <algorithm>
+#include "pathfinding/path.h"
 
 struct PlanNode
 {
@@ -11,15 +12,6 @@ struct PlanNode
 
   size_t actionId;
 };
-
-static float heuristic(const goap::WorldState &from, const goap::WorldState &to)
-{
-  float cost = 0;
-  for (size_t i = 0; i < to.size(); ++i)
-    if (to[i] >= 0) // we care about it
-      cost += float(abs(to[i] - from[i]));
-  return cost;
-}
 
 static void reconstruct_plan(PlanNode &goal_node, const std::vector<PlanNode> &closed, std::vector<goap::PlanStep> &plan)
 {
@@ -81,6 +73,46 @@ float goap::make_plan(const Planner &planner, const WorldState &from, const Worl
   }
   return 0.f;
 }
+
+bool goap::make_ida_star_plan(const Planner &planner, const WorldState &from,
+                               const WorldState &to, std::vector<PlanStep> &plan)
+{
+  const auto heuristicCb = [&](PlanStep from, PlanStep to) -> float {
+    return heuristic(from.worldState, to.worldState);
+  };
+  const auto validCb = [&](PlanStep p) -> bool { return true; };
+  const auto weightCb = [&](PlanStep p) -> float {
+    return get_action_cost(planner, p.action);
+  };
+  const auto neighboursCb = [&](PlanStep p) {
+    const auto transitions = find_valid_state_transitions(planner, p.worldState);
+    std::vector<PlanStep> plans;
+    plans.reserve(transitions.size());
+    for (auto a : transitions)
+      plans.push_back({a, apply_action(planner, a, p.worldState)});
+    return plans;
+  };
+  float bound = heuristic(from, to);
+  const PlanStep planfrom = {-1, from};
+  const PlanStep planto = {-1, to};
+  plan = {{planfrom}};
+  bool res = false;
+  while (true)
+  {
+    const float t = ida_star_search(plan, 0.f, bound, planto, validCb,
+                                    heuristicCb, weightCb, neighboursCb);
+    bound = t;
+    printf("new bound %0.1f\n", bound);
+    if (t < 0.f)
+      res = true;
+
+    if (res || t == FLT_MAX)
+      break;
+  }
+  plan.erase(plan.begin());
+  return res;
+}
+
 
 void goap::print_plan(const Planner &planner, const WorldState &init, const std::vector<PlanStep> &plan)
 {

@@ -86,7 +86,8 @@ static void debug_enemy_planner()
         {{"enemy_alive", 0}, {"health_state", Healthy}});
 
     std::vector<goap::PlanStep> plan;
-    goap::make_plan(pl, ws, goal, plan);
+    goap::make_ida_star_plan(pl, ws, goal, plan);
+    //goap::make_plan(pl, ws, goal, plan);
     goap::print_plan(pl, ws, plan);
   }
   {
@@ -102,7 +103,8 @@ static void debug_enemy_planner()
         {{"enemy_alive", 0}, {"health_state", Healthy}, {"enemy_dist", DistMelee}});
 
     std::vector<goap::PlanStep> plan;
-    goap::make_plan(pl, ws, goal, plan);
+    goap::make_ida_star_plan(pl, ws, goal, plan);
+    //goap::make_plan(pl, ws, goal, plan);
     goap::print_plan(pl, ws, plan);
   }
 }
@@ -225,7 +227,7 @@ int main(int /*argc*/, const char ** /*argv*/)
     init_dungeon(ecs, tiles, dungWidth, dungHeight);
   }
   init_roguelike(ecs);
-  //debug_enemy_planner();
+  debug_enemy_planner();
   debug_looter_planner();
 
   Camera2D camera = { {0, 0}, {0, 0}, 0.f, 1.f };
