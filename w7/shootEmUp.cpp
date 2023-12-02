@@ -9,6 +9,20 @@
 
 constexpr float tile_size = 64.f;
 
+static void draw_path(const std::vector<IVec2>& path, float tile_size)
+{
+  DrawRectangle(path.front().x * tile_size, path.front().y * tile_size,
+                tile_size, tile_size, GetColor(0x00ff00ff));
+  DrawRectangle(path.back().x * tile_size, path.back().y * tile_size, tile_size,
+                tile_size, GetColor(0x00ff00ff));
+  for (size_t i = 1; i < path.size(); ++i)
+  {
+    DrawLineEx(Vector2{(path[i - 1].x + 0.5f) * tile_size, (path[i - 1].y + 0.5f) * tile_size},
+               Vector2{(path[i].x + 0.5f) * tile_size, (path[i].y + 0.5f) * tile_size}, 5.f,
+               GetColor(0x00ff00ff));
+  }
+}
+
 static void register_roguelike_systems(flecs::world &ecs)
 {
   static auto playerPosQuery = ecs.query<const Position, const IsPlayer>();
@@ -78,6 +92,8 @@ static void register_roguelike_systems(flecs::world &ecs)
       });
     });
 
+  static IVec2 from{};
+  static IVec2 to{};
   static auto cameraQuery = ecs.query<const Camera2D>();
   ecs.system<const DungeonPortals, const DungeonData>()
     .each([&](const DungeonPortals &dp, const DungeonData &dd)
@@ -134,6 +150,17 @@ static void register_roguelike_systems(flecs::world &ecs)
                      (fromCenter.y + toCenter.y) * 0.5f,
                      16, WHITE);
           }
+        }
+        IVec2 target = {static_cast<int>(mousePosition.x / tile_size),
+                        static_cast<int>(mousePosition.y / tile_size)};
+        if (IsMouseButtonPressed(0))
+          from = target;
+        else if (IsMouseButtonPressed(1))
+          to = target;
+        if (from != to)
+        {
+          const auto path = find_hierarchical_path(dp, dd, from, to);
+          draw_path(path, tile_size);
         }
       });
     });
